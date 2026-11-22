@@ -124,7 +124,7 @@ class PackagerAgent(BaseAgent):
         pcfgs = self.playbook["packaging"]["platforms"]
         packages = {plat: enforce(plat, raw.get(plat, {}), pcfgs[plat], self.rules) for plat in pcfgs}
         out = Path(p["clip_path"]).with_name("packages.json")
-        out.write_text(json.dumps(packages, indent=2, ensure_ascii=False))
+        out.write_text(json.dumps(packages, indent=2, ensure_ascii=False), encoding="utf-8")
         return AgentResult("packaged", reason=f"{len(packages)} platforms via {engine}",
                            payload={"packages": packages, "packages_path": str(out), "packaging_engine": engine},
                            decisions={"caption_style": self.playbook["packaging"]["caption_style"],

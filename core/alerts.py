@@ -21,7 +21,7 @@ def raise_alert(conn, alerts_dir: Path, kind: str, message: str, severity: str =
     alerts_dir.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     path = alerts_dir / f"alert-{stamp}-{kind}.json"
-    path.write_text(json.dumps({"ts": stamp, "kind": kind, "severity": severity, "message": message, **details}, indent=2))
+    path.write_text(json.dumps({"ts": stamp, "kind": kind, "severity": severity, "message": message, **details}, indent=2), encoding="utf-8")
     log("alert_escalated", level="error", kind=kind, path=str(path), message=message)
     return path
 
@@ -56,7 +56,7 @@ def write_digest(conn, alerts_dir: Path, day: str | None = None) -> Path:
     lines += [f"- {a['ts']} [{a['severity']}] {a['kind']}: {a['message']}" for a in alerts] or ["- none"]
     alerts_dir.mkdir(parents=True, exist_ok=True)
     path = alerts_dir / f"digest-{stats['day']}.md"
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     if stats["jobs_touched"] >= 5 and stats["failure_rate"] > FAILURE_RATE_THRESHOLD:
         raise_alert(conn, alerts_dir, "failure_rate",
                     f"daily failure rate {stats['failure_rate']:.0%} exceeds {FAILURE_RATE_THRESHOLD:.0%}", **stats)

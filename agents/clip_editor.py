@@ -223,8 +223,8 @@ class ClipEditorAgent(BaseAgent):
 
     def process(self, job):
         p = job.payload
-        transcript = json.loads(Path(p["transcript"]).read_text())
-        scenes = json.loads(Path(p["scenes"]).read_text())
+        transcript = json.loads(Path(p["transcript"]).read_text(encoding="utf-8"))
+        scenes = json.loads(Path(p["scenes"]).read_text(encoding="utf-8"))
         words = all_words(transcript)
         start, end = p["start"], p["end"]
         feedback = p.get("qa_feedback") or {}
@@ -241,7 +241,7 @@ class ClipEditorAgent(BaseAgent):
         if not wm_path.exists():
             raise PersistentError(f"watermark missing: {wm_path}")
         ass_path = out_dir / "subs.ass"
-        ass_path.write_text(build_ass(words, r_start - subs_shift, r_end - subs_shift, scfg, rcfg["width"], rcfg["height"]))
+        ass_path.write_text(build_ass(words, r_start - subs_shift, r_end - subs_shift, scfg, rcfg["width"], rcfg["height"]), encoding="utf-8")
         out_path = out_dir / "clip.mp4"
         fps = min(float(scenes.get("fps") or rcfg["fps"]), float(rcfg["fps"]))
 

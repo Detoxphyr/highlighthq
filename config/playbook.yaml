@@ -32,7 +32,7 @@ render:
 subtitles:
   style: word_pop           # word_pop | plain
   words_per_chunk: 3
-  font: DejaVu Sans
+  font: Arial
   font_size: 78
   primary_color: "&H00FFFFFF"
   highlight_color: "&H0000E5FF"   # ASS BGR: amber

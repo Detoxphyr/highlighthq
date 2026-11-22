@@ -60,7 +60,7 @@ def ass_events(path: str) -> list[tuple[float, float]]:
         h, m, sec = s.split(":")
         return int(h) * 3600 + int(m) * 60 + float(sec)
     out = []
-    for line in Path(path).read_text().splitlines():
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
         if line.startswith("Dialogue:"):
             parts = line.split(",", 9)
             out.append((t(parts[1]), t(parts[2])))
@@ -254,7 +254,7 @@ class QAGateAgent(BaseAgent):
 
     def process(self, job):
         p = job.payload
-        words = all_words(json.loads(Path(p["transcript"]).read_text()))
+        words = all_words(json.loads(Path(p["transcript"]).read_text(encoding="utf-8")))
         checks = [check_format(p, self.rules)]
         if checks[0].ok:
             checks += [check_sync(p, self.rules), check_black(p, self.rules)]
@@ -270,7 +270,7 @@ class QAGateAgent(BaseAgent):
         verdict = {"approved": "approve", "killed": "kill"}.get(to_status, "reject")
         report = {"verdict": verdict, "reason": reason, "review_engine": engine, "review": review,
                   "checks": [asdict(c) for c in checks], "loop": job.qa_loops}
-        Path(p["clip_path"]).with_name("qa.json").write_text(json.dumps(report, indent=2, ensure_ascii=False))
+        Path(p["clip_path"]).with_name("qa.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
         history = p.get("qa_history", []) + [{"verdict": verdict, "reason": reason}]
         return AgentResult(to_status, reason=reason,
                            payload={"qa": report, "qa_feedback": feedback, "qa_history": history},

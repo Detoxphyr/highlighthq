@@ -23,7 +23,7 @@ def log(event: str, level: str = "info", **fields) -> dict:
     record.update(fields)
     line = json.dumps(record, default=str)
     if _LOG_FILE is not None:
-        with open(_LOG_FILE, "a") as fh:
+        with open(_LOG_FILE, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
     if not _QUIET:
         print(line, file=sys.stderr)
@@ -35,7 +35,7 @@ def tail_for_job(job_id: int, limit: int = 200) -> list[dict]:
     if _LOG_FILE is None or not _LOG_FILE.exists():
         return []
     out = []
-    with open(_LOG_FILE) as fh:
+    with open(_LOG_FILE, encoding="utf-8") as fh:
         for line in fh:
             try:
                 rec = json.loads(line)

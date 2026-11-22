@@ -252,8 +252,8 @@ class MomentFinderAgent(BaseAgent):
     kind = "source"
 
     def process(self, job):
-        transcript = json.loads(open(job.payload["transcript"]).read())
-        scenes = json.loads(open(job.payload["scenes"]).read())
+        transcript = json.loads(open(job.payload["transcript"], encoding="utf-8").read())
+        scenes = json.loads(open(job.payload["scenes"], encoding="utf-8").read())
         chosen, engine = find_moments(transcript, scenes, self.playbook, llm=self.llm)
         if not chosen:
             return AgentResult("killed", reason="no segment fits the playbook length window")

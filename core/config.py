@@ -19,7 +19,7 @@ def load_dotenv(path: Path | None = None) -> None:
     path = path or ROOT / ".env"
     if not path.exists():
         return
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -64,7 +64,7 @@ class Settings:
 
 
 def read_yaml(path: Path) -> dict:
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         return yaml.safe_load(fh) or {}
 
 
@@ -90,7 +90,7 @@ def load_playbook(settings: Settings, conn=None) -> dict:
     if conn is not None:
         conn.execute(
             "INSERT OR IGNORE INTO playbook_versions(version, yaml, status) VALUES (?,?, 'active')",
-            (str(pb.get("version", "1")), path.read_text()),
+            (str(pb.get("version", "1")), path.read_text(encoding="utf-8")),
         )
         conn.commit()
     pb["version"] = str(pb.get("version", "1"))

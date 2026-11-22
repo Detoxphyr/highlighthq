@@ -110,13 +110,13 @@ def transcribe_sidecar(source_original: str) -> dict:
     base = Path(source_original).expanduser()
     j = base.with_suffix(".transcript.json")
     if j.exists():
-        data = json.loads(j.read_text())
+        data = json.loads(j.read_text(encoding="utf-8"))
         data.setdefault("engine", "sidecar:json")
         return data
     srt = base.with_suffix(".srt")
     if srt.exists():
         segs = []
-        for block in re.split(r"\n\s*\n", srt.read_text().strip()):
+        for block in re.split(r"\n\s*\n", srt.read_text(encoding="utf-8").strip()):
             lines = block.strip().splitlines()
             if len(lines) < 3 or "-->" not in lines[1]:
                 continue
@@ -186,8 +186,8 @@ class IngestAgent(BaseAgent):
             lambda: [float(t) for t in np.arange(10, info["duration"], 10)],
             "scene_detection", job_id=job.id)
         scenes = {"cuts": cuts, "path_used": scene_path, "loudness_db": loudness_curve(media), "hop_s": 0.5, **info}
-        (out_dir / "transcript.json").write_text(json.dumps(transcript, indent=1))
-        (out_dir / "scenes.json").write_text(json.dumps(scenes))
+        (out_dir / "transcript.json").write_text(json.dumps(transcript, indent=1), encoding="utf-8")
+        (out_dir / "scenes.json").write_text(json.dumps(scenes), encoding="utf-8")
         self.conn.execute("UPDATE sources SET duration_s=? WHERE id=?", (info["duration"], job.source_id))
         n_words = sum(len(s["words"]) for s in transcript["segments"])
         return AgentResult(
