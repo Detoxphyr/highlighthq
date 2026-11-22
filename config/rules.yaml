@@ -1,0 +1,24 @@
+# HighlightHQ hard rules. Human-owned. No agent (including the Learner) may edit this file.
+clip:
+  min_duration_s: 15
+  max_duration_s: 61        # platform hard limit headroom (Shorts <= 60s + rounding)
+  width: 1080
+  height: 1920
+
+qa:
+  max_qa_loops: 2           # rejects allowed before a clip is killed
+  max_black_s: 0.5          # longest allowed black interval
+  max_unsynced_word_ratio: 0.15   # share of subtitle words that may land in silence
+  min_llm_score: 6          # independent QA pass, 1-10
+  duplicate_overlap: 0.5    # time IoU vs an existing clip from the same source
+  duplicate_text_similarity: 0.85
+  require_watermark: true
+
+content:
+  banned_terms: ["guaranteed income", "get rich quick", "free money", "click the link in bio to claim"]
+  max_hashtags_any_platform: 5
+  disallow_all_caps_titles: true
+
+posting:                    # enforced by the Publisher in Phase 2
+  daily_cap_per_account: 3
+  min_spacing_minutes: 90

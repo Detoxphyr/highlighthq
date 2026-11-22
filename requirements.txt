@@ -1,0 +1,7 @@
+anthropic>=2.12
+faster-whisper>=1.1
+yt-dlp>=2025.1
+opencv-python-headless>=4.9,<5   # OpenCV 5 drops the Haar cascade face detector
+numpy>=1.26
+PyYAML>=6.0
+pytest>=8.0

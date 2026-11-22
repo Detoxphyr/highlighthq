@@ -1,0 +1,56 @@
+# HighlightHQ playbook: style and strategy. Versioned.
+# The Learner (Phase 3) may propose edits to this file only; never rules.yaml or posting caps.
+version: "1"
+
+clip:
+  min_s: 20            # shortest candidate segment
+  max_s: 60            # longest candidate segment
+  target_s: 35         # preferred length; scoring nudges toward it
+  top_n: 3             # candidates handed to the Clip Editor per source
+  max_overlap: 0.25    # max fraction two chosen candidates may overlap
+
+hook:
+  window_s: 3          # the hook must land in the first N seconds
+  question_bonus: true
+  strong_openers: ["here's", "the truth", "nobody", "never", "secret", "mistake", "why", "how", "stop", "what if", "imagine", "the biggest", "most people"]
+  hook_types: [question, bold_claim, number, story, contrarian]
+
+scoring_weights:       # Moment Finder; must sum to 1
+  hook: 0.35
+  self_contained: 0.25
+  emotional_peak: 0.2
+  quotability: 0.2
+
+render:
+  width: 1080
+  height: 1920
+  fps: 30
+  crf: 21
+  preset: veryfast
+  reframe_smoothing: 0.15   # EMA factor for the crop track (lower = smoother)
+
+subtitles:
+  style: word_pop           # word_pop | plain
+  words_per_chunk: 3
+  font: DejaVu Sans
+  font_size: 78
+  primary_color: "&H00FFFFFF"
+  highlight_color: "&H0000E5FF"   # ASS BGR: amber
+  outline: 5
+  margin_v: 420                   # distance from bottom, keeps captions out of platform UI
+
+watermark:
+  path: assets/watermark.png
+  position: top_right
+  opacity: 0.8
+  scale: 0.22               # fraction of output width
+
+packaging:
+  caption_style: hook_then_cta
+  cta: "Follow for more highlights."
+  base_hashtags: ["#shorts", "#highlights"]
+  platforms:
+    youtube_shorts:   {title_max: 100, caption_max: 500,  hashtags: 3, extra_tags: ["#shorts"]}
+    instagram_reels:  {title_max: 0,   caption_max: 2200, hashtags: 5, extra_tags: ["#reels"]}
+    tiktok:           {title_max: 0,   caption_max: 2200, hashtags: 4, extra_tags: ["#fyp"]}
+    facebook_reels:   {title_max: 255, caption_max: 2000, hashtags: 3, extra_tags: ["#reels"]}
