@@ -41,13 +41,77 @@ def crop_geometry(src_w: int, src_h: int) -> tuple[int, int]:
     return src_w, int(round(src_w * 16 / 9)) // 2 * 2
 
 
+def _zero_lag_ema(values: np.ndarray, alpha: float) -> np.ndarray:
+    """Forward then backward EMA: smooth like an EMA but without the causal lag."""
+    if values.size == 0:
+        return values
+    fwd = np.empty_like(values)
+    cur = values[0]
+    for i, v in enumerate(values):
+        cur = cur + alpha * (v - cur)
+        fwd[i] = cur
+    out = np.empty_like(values)
+    cur = fwd[-1]
+    for i in range(len(fwd) - 1, -1, -1):
+        cur = cur + alpha * (fwd[i] - cur)
+        out[i] = cur
+    return out
+
+
+def plan_track(faces: list[list[tuple[float, float]]], fallback: list[float], fallback_src: list[str], w: int,
+               crop_w: int, sample_fps: float = 4.0, smoothing: float = 0.15, min_face_ratio: float = 0.2,
+               max_jump_frac: float = 0.2, neighborhood_s: float = 4.0) -> tuple[list[float], str, float]:
+    """Crop-center track from per-sample face boxes [(x0, x1), ...] in source px.
+
+    Prefers the persistent face track over the largest face per frame: picks the detection nearest the dominant
+    position, drops isolated or jumpy detections (fewer than 2 neighbours within +/- neighborhood_s, or farther
+    than max_jump_frac*w from their neighbours' median), fills gaps from the face track instead of saliency, smooths
+    without lag and keeps the whole face box inside the crop. Falls back to the saliency/center track when faces
+    are too rare. Returns (cx per sample, engine, face_ratio)."""
+    n = len(faces)
+    half, lo_lim, hi_lim = crop_w / 2, crop_w / 2, w - crop_w / 2
+    centers = [(a + b) / 2 for fs in faces for a, b in fs]
+    pick: list[tuple[float, float] | None] = [None] * n
+    if centers:
+        ref = float(np.median(centers))
+        for i, fs in enumerate(faces):
+            if fs:
+                pick[i] = min(fs, key=lambda f: abs((f[0] + f[1]) / 2 - ref))
+    k = max(1, int(round(neighborhood_s * sample_fps)))
+    accepted = []
+    for i, f in enumerate(pick):
+        if f is None:
+            continue
+        near = [(g[0] + g[1]) / 2 for g in pick[max(0, i - k): i + k + 1] if g is not None]
+        if len(near) >= 2 and abs((f[0] + f[1]) / 2 - float(np.median(near))) <= max_jump_frac * w:
+            accepted.append(i)
+    face_ratio = len(accepted) / n if n else 0.0
+    idx = np.arange(n)
+    if accepted and face_ratio >= min_face_ratio:
+        acc = np.array(accepted)
+        x0 = np.array([pick[i][0] for i in accepted])
+        x1 = np.array([pick[i][1] for i in accepted])
+        raw = np.interp(idx, acc, (x0 + x1) / 2)
+        cx = _zero_lag_ema(raw, smoothing)
+        # keep the whole face box inside the crop (center it when the face is wider than the crop)
+        lo = np.interp(idx, acc, x1) - half
+        hi = np.interp(idx, acc, x0) + half
+        mid = (lo + hi) / 2
+        cx = np.where(lo <= hi, np.clip(cx, lo, hi), mid)
+        engine = "face"
+    else:
+        cx = _zero_lag_ema(np.array(fallback, dtype=float), smoothing)
+        engine = max(set(fallback_src), key=fallback_src.count) if fallback_src else "center"
+    return [float(v) for v in np.clip(cx, lo_lim, hi_lim)], engine, face_ratio
+
+
 def compute_track(media: str, start: float, end: float, sample_fps: float = 4.0, smoothing: float = 0.15) -> dict:
     """Return {'times': [...], 'cx': [...], 'engine': face|saliency|center} with cx = crop center x in px."""
     cap = cv2.VideoCapture(media)
     if not cap.isOpened():
         raise PersistentError(f"cannot open {media}")
     w, h = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    times, raw, sources = [], [], []
+    times, faces_all, fallback, sources = [], [], [], []
     prev_small = None
     det = face_detector()
     t = start
@@ -60,37 +124,28 @@ def compute_track(media: str, start: float, end: float, sample_fps: float = 4.0,
         small = cv2.resize(frame, (480, int(h * scale)))
         gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
         faces = det.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(24, 24))
-        cx = None
-        if len(faces):
-            x, y, fw, fh = max(faces, key=lambda f: f[2] * f[3])
-            cx, src = (x + fw / 2) / scale, "face"
+        faces_all.append([(x / scale, (x + fw) / scale) for x, y, fw, fh in faces])
+        # saliency fallback: motion energy if available, else edge density
+        if prev_small is not None:
+            energy = cv2.absdiff(gray, prev_small).astype(np.float32)
         else:
-            # saliency: motion energy if available, else edge density
-            if prev_small is not None:
-                energy = cv2.absdiff(gray, prev_small).astype(np.float32)
-            else:
-                energy = np.abs(cv2.Laplacian(gray, cv2.CV_32F))
-            col = energy.sum(axis=0)
-            if col.sum() > 1e-3 * energy.size:
-                cx, src = float((col * np.arange(col.size)).sum() / col.sum()) / scale, "saliency"
-            else:
-                cx, src = w / 2, "center"
+            energy = np.abs(cv2.Laplacian(gray, cv2.CV_32F))
+        col = energy.sum(axis=0)
+        if col.sum() > 1e-3 * energy.size:
+            fallback.append(float((col * np.arange(col.size)).sum() / col.sum()) / scale)
+            sources.append("saliency")
+        else:
+            fallback.append(w / 2)
+            sources.append("center")
         prev_small = gray
         times.append(t)
-        raw.append(cx)
-        sources.append(src)
         t += 1 / sample_fps
     cap.release()
-    if not raw:
+    if not times:
         raise PersistentError("no frames decoded for reframe track")
     crop_w, _ = crop_geometry(w, h)
-    sm, cur = [], raw[0]
-    for v in raw:
-        cur = cur + smoothing * (v - cur)
-        sm.append(float(np.clip(cur, crop_w / 2, w - crop_w / 2)))
-    engine = max(set(sources), key=sources.count)
-    return {"times": times, "cx": sm, "engine": engine, "face_ratio": sources.count("face") / len(sources),
-            "src_w": w, "src_h": h}
+    cx, engine, face_ratio = plan_track(faces_all, fallback, sources, w, crop_w, sample_fps, smoothing)
+    return {"times": times, "cx": cx, "engine": engine, "face_ratio": face_ratio, "src_w": w, "src_h": h}
 
 
 # ---------- subtitles ----------
@@ -159,9 +214,16 @@ def snap_to_sentences(words: list[dict], start: float, end: float) -> tuple[floa
 def _filter_graph(ass_path: Path, wm_cfg: dict, out_w: int) -> str:
     wm_w = int(out_w * wm_cfg.get("scale", 0.22)) // 2 * 2
     ass = str(ass_path).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+    if not wm_cfg.get("enabled", True):
+        return f"[0:v]ass='{ass}',format=yuv420p[v]"
     return (f"[0:v]ass='{ass}'[v1];"
             f"[2:v]scale={wm_w}:-1,format=rgba,colorchannelmixer=aa={wm_cfg.get('opacity', 0.8)}[wm];"
             f"[v1][wm]overlay=W-w-40:60,format=yuv420p[v]")
+
+
+def source_frame_index(i: int, out_fps: float, src_fps: float) -> int:
+    """Index (from the window start) of the source frame shown at output frame i."""
+    return int(round(i * src_fps / out_fps))
 
 
 def render_tracked(media: str, start: float, end: float, track: dict, ass_path: Path, wm_path: Path,
@@ -175,17 +237,32 @@ def render_tracked(media: str, start: float, end: float, track: dict, ass_path: 
     cmd = ["ffmpeg", "-y", "-v", "error",
            "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}", "-r", f"{fps:.5f}", "-i", "-",
            "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", media,
-           "-i", str(wm_path),
+           *(["-i", str(wm_path)] if wm_cfg.get("enabled", True) else []),
            "-filter_complex", _filter_graph(ass_path, wm_cfg, W),
            "-map", "[v]", "-map", "1:a:0", "-c:v", "libx264", "-preset", rcfg["preset"], "-crf", str(rcfg["crf"]),
            "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", "-shortest", str(out_path)]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     times, cxs = np.array(track["times"]), np.array(track["cx"])
-    last = None
+    src_fps = cap.get(cv2.CAP_PROP_FPS) or fps
+    last, pos = None, -1   # pos: index (from start) of the last source frame decoded
     try:
         for i in range(n_frames):
-            ok, frame = cap.read()
-            if not ok:
+            # Pick the source frame for output time i/fps. Reading frames back to back would play a 60 fps
+            # source at half speed in a 30 fps output, drifting away from the audio.
+            want = source_frame_index(i, fps, src_fps)
+            frame = last                      # want == pos: repeat the frame (source slower than output)
+            while pos < want:
+                if pos < want - 1:            # skip frames we won't show without decoding them to images
+                    if not cap.grab():
+                        break
+                    pos += 1
+                    continue
+                ok, f = cap.read()
+                pos += 1
+                if ok:
+                    frame = f
+                break
+            if frame is None:
                 frame = last if last is not None else np.zeros((src_h, src_w, 3), np.uint8)
             last = frame
             t = start + i / fps
@@ -211,7 +288,8 @@ def render_static(media: str, start: float, end: float, ass_path: Path, wm_path:
     graph = (f"[0:v]crop='min(iw,ih*9/16)':'min(ih,iw*16/9)',scale={W}:{H},setsar=1[c];"
              + _filter_graph(ass_path, wm_cfg, W).replace("[0:v]", "[c]"))
     run_cmd(["ffmpeg", "-y", "-v", "error", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", media,
-             "-i", media, "-i", str(wm_path), "-filter_complex", graph, "-map", "[v]", "-map", "0:a:0",
+             "-i", media, *(["-i", str(wm_path)] if wm_cfg.get("enabled", True) else []),
+             "-filter_complex", graph, "-map", "[v]", "-map", "0:a:0",
              "-c:v", "libx264", "-preset", rcfg["preset"], "-crf", str(rcfg["crf"]), "-c:a", "aac", "-b:a", "160k",
              "-movflags", "+faststart", str(out_path)], timeout=1800)
 
@@ -236,9 +314,11 @@ class ClipEditorAgent(BaseAgent):
 
         out_dir = self.job_dir(job) / f"clip_{job.id}"
         out_dir.mkdir(exist_ok=True)
-        rcfg, scfg, wcfg = self.playbook["render"], self.playbook["subtitles"], self.playbook["watermark"]
+        rcfg, scfg, wcfg = self.playbook["render"], self.playbook["subtitles"], dict(self.playbook["watermark"])
+        if (self.rules.get("campaign") or {}).get("no_logos"):
+            wcfg["enabled"] = False   # hard rule: never overlay a watermark/logo while campaign.no_logos is set
         wm_path = self.settings.assets_dir.parent / wcfg["path"]
-        if not wm_path.exists():
+        if wcfg.get("enabled", True) and not wm_path.exists():
             raise PersistentError(f"watermark missing: {wm_path}")
         ass_path = out_dir / "subs.ass"
         ass_path.write_text(build_ass(words, r_start - subs_shift, r_end - subs_shift, scfg, rcfg["width"], rcfg["height"]), encoding="utf-8")
@@ -267,7 +347,8 @@ class ClipEditorAgent(BaseAgent):
             payload={"clip_path": str(out_path), "checkpoint": str(ckpt), "subtitles": str(ass_path),
                      "render_start": round(r_start, 3), "render_end": round(r_end, 3), "start": round(start, 3),
                      "end": round(end, 3), "subtitle_shift_s": subs_shift, "render_mode": mode,
-                     "reframe_engine": track.get("engine"), "face_ratio": round(track.get("face_ratio", 0.0), 2)},
+                     "reframe_engine": track.get("engine"), "face_ratio": round(track.get("face_ratio", 0.0), 2),
+                     "watermark": bool(wcfg.get("enabled", True))},
             decisions={"length_s": round(r_end - r_start, 1), "reframe": track.get("engine"),
                        "subtitle_style": scfg["style"]})
 
