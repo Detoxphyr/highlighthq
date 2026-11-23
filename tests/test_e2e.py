@@ -33,7 +33,7 @@ def test_pipeline_end_to_end(settings, conn, video, monkeypatch):
         assert (info["width"], info["height"]) == (1080, 1920) and info["has_audio"]
         assert 15 <= info["duration"] <= 61
         assert Path(p["checkpoint"]).exists()
-        assert set(p["packages"]) == {"youtube_shorts", "instagram_reels", "tiktok", "facebook_reels"}
+        assert set(p["packages"]) == {"youtube_shorts", "instagram_reels", "tiktok", "x"}
         assert p["qa"]["verdict"] == "approve"
     # every move is in the transitions table
     n = conn.execute("SELECT COUNT(*) FROM transitions").fetchone()[0]

@@ -108,7 +108,7 @@ def test_enforce_limits(rules):
 
 def test_template_covers_all_platforms(playbook, rules):
     raw = template_package(" ".join(SENTS[1:4]), "contrarian", playbook)
-    assert set(raw) == {"youtube_shorts", "instagram_reels", "tiktok", "facebook_reels"}
+    assert set(raw) == {"youtube_shorts", "instagram_reels", "tiktok", "x"}
     pk = enforce("instagram_reels", raw["instagram_reels"], playbook["packaging"]["platforms"]["instagram_reels"], rules)
     assert pk["title"] == "" and "#reels" in pk["hashtags"]
 

@@ -25,11 +25,25 @@ python scripts/make_watermark.py   # or drop your own assets/watermark.png
 
 The first transcription downloads the faster-whisper model (`HQ_WHISPER_MODEL`, default `base.en`) from Hugging Face.
 
+### Windows notes
+
+- If Windows Smart App Control blocks faster-whisper's DLLs (`ctranslate2`, PyAV: "An Application Control policy has
+  blocked this file"), transcribe with a local whisper.cpp build instead:
+  `python scripts/whispercpp_sidecar.py data/vods/<id>.mp4`. It writes `<id>.transcript.json` next to the video with
+  real word timestamps, and Ingest picks it up through its sidecar fallback.
+- Shells started by the Claude desktop app set `ANTHROPIC_BASE_URL`; clear it (`Remove-Item Env:ANTHROPIC_BASE_URL`)
+  so pipeline calls go to api.anthropic.com.
+- The playbook is versioned in the DB: an existing DB keeps using its stored version. Start a fresh DB (or bump
+  `version` and clear the active row) after editing `playbook.yaml`.
+
 ## Run
 
 ```bash
 python run.py init-db
 python run.py add "https://www.youtube.com/watch?v=..."   # or a local file path
+python run.py add data/vods/x.mp4 --peaks peaks.json --source-date 2026-11-20
+#   --peaks: kai_scan.py output (or a list of seconds); the Moment Finder then only builds windows within
+#   playbook clip.peak_radius_s of a peak. A local <video>.peaks.json is picked up automatically.
 python run.py run-pipeline        # drains agents 1-5 until there is no work left, then prints the job table
 python run.py status              # job table at any time
 python run.py digest              # writes alerts/digest-YYYY-MM-DD.md
@@ -58,7 +72,7 @@ The generator makes an original 2.3-minute talk (espeak-ng narration, animated s
 ### Tests
 
 ```bash
-python -m pytest -q          # 22 tests; the end-to-end test renders real clips and takes ~3-4 minutes
+python -m pytest -q          # 44 tests; the end-to-end test renders real clips and takes ~3-4 minutes
 ```
 
 ## Layout
@@ -80,8 +94,8 @@ tests/    test_core.py · test_agents_unit.py · test_e2e.py
 |---|---|---|---|---|
 | 1 | Ingest | scouted -> ingested | yt-dlp, faster-whisper word timestamps, ffmpeg `scdet` scene cuts, loudness curve | direct HTTP download; smaller whisper model, then a sidecar `.transcript.json`/`.srt`; fixed-interval cuts |
 | 2 | Moment Finder | ingested -> candidates (+ one clip job per moment) | sentence-aligned 20-60s windows scored by `claude-sonnet-5-5` on hook (first 3s), self-contained arc, emotional peak, quotability, weighted per playbook | deterministic heuristic scorer (hook patterns, dangling openers, loudness peaks, quotable lines) |
-| 3 | Clip Editor | candidates -> rendered | 1080x1920 reframe tracking the largest face (OpenCV), word-pop ASS subtitles, watermark overlay, checkpoint frame | motion/saliency tracking, then a static center-crop ffmpeg render |
-| 4 | Packager | rendered -> packaged | per-platform title/caption/hashtags (YouTube Shorts, Instagram Reels, TikTok, Facebook Reels) by the LLM | template packaging; platform limits are enforced on either path |
+| 3 | Clip Editor | candidates -> rendered | 1080x1920 reframe following the persistent face track (OpenCV; outliers rejected, zero-lag smoothing, whole face kept in the crop), real-time frame mapping for any source fps, word-pop ASS subtitles, optional watermark (`watermark.enabled`; never while `campaign.no_logos`), checkpoint frame | motion/saliency tracking, then a static center-crop ffmpeg render |
+| 4 | Packager | rendered -> packaged | per-platform title/caption/hashtags for the playbook's platforms (YouTube Shorts, Instagram Reels, TikTok, X) by the LLM, naming `packaging.creator_name` with `required_hashtags` first | template packaging; platform limits are enforced on either path |
 | 5 | QA Gate | packaged -> approved / back / killed | format, audio-caption sync (captions vs detected silence), cut-off sentences, black frames, rules.yaml compliance, duplicates, plus an independent LLM review | heuristic review score |
 
 QA rejections go back to the responsible agent with a machine-readable fix: editor problems return the card to
@@ -107,4 +121,7 @@ killed immediately.
 - `playbook.yaml` holds style and strategy (lengths, hook rules, scoring weights, subtitle style, packaging). It is
   versioned in the `playbook_versions` table; the Learner (Phase 3) will only ever edit this file.
 - `rules.yaml` holds hard limits (durations, QA thresholds, banned terms, posting caps). No agent writes to it.
+  Its `campaign` section (Kai Cenat GTA 6 Marathon) is enforced by the QA Gate: required mention and hashtag on
+  every platform, allowed platforms, no logos, English only, and content rules (Kai the primary focus, no negative
+  portrayal, no hate farming) judged by the LLM review, where any violation kills the clip.
 - Secrets come only from the environment or `.env`. `HQ_LLM_ENABLED=0` forces every agent onto its fallback path.
