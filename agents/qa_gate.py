@@ -160,11 +160,50 @@ def check_rules(p: dict, rules: dict, settings_root: Path, playbook: dict) -> li
             problems.append(f"{plat}: empty caption")
     out.append(Check("rules_packaging", not problems, "; ".join(problems) or "all platforms within rules",
                      "packager" if problems else ""))
-    if rules["qa"].get("require_watermark"):
+    # The watermark check only applies when the playbook overlays one (watermark.enabled, default true).
+    if rules["qa"].get("require_watermark") and playbook["watermark"].get("enabled", True):
         wm = settings_root / playbook["watermark"]["path"]
         ok = wm.exists() and p.get("render_mode") in ("tracked", "static_center")
         out.append(Check("rules_watermark", ok, "watermark overlaid" if ok else "watermark missing",
                          "" if ok else "clip_editor"))
+    return out
+
+
+JAPANESE = re.compile(r"[぀-ヿㇰ-ㇿｦ-ﾟ一-鿿]")  # kana + CJK ideographs
+
+
+def check_campaign(p: dict, rules: dict, playbook: dict) -> list[Check]:
+    """Hard campaign rules from rules.yaml `campaign` (no-op when the section is absent)."""
+    camp = rules.get("campaign") or {}
+    if not camp:
+        return []
+    pkgs = p.get("packages") or {}
+    out = []
+    mentions = camp.get("required_mentions") or []
+    missing = [f"{plat}: no '{m}'" for plat, pkg in pkgs.items() for m in mentions
+               if m.lower() not in f"{pkg.get('title', '')} {pkg.get('full_caption', '')}".lower()]
+    out.append(Check("campaign_mentions", not missing, "; ".join(missing) or f"all platforms name {mentions}",
+                     "packager" if missing else ""))
+    req_tags = [t.lower() for t in camp.get("required_hashtags") or []]
+    no_tag = [f"{plat}: missing {t}" for plat, pkg in pkgs.items() for t in req_tags
+              if t not in [h.lower() for h in pkg.get("hashtags", [])]]
+    out.append(Check("campaign_hashtags", not no_tag, "; ".join(no_tag) or "required hashtags on every platform",
+                     "packager" if no_tag else ""))
+    allowed = camp.get("allowed_platforms")
+    if allowed is not None:
+        bad = [plat for plat in pkgs if plat not in allowed]
+        # a platform outside the campaign is a configuration error: no agent can fix it by retrying
+        out.append(Check("campaign_platforms", not bad, f"not allowed: {bad}" if bad else "platforms allowed",
+                         "kill" if bad else ""))
+    if camp.get("no_logos"):
+        wm_on = bool(p.get("watermark", playbook.get("watermark", {}).get("enabled", True)))
+        out.append(Check("campaign_no_logos", not wm_on, "watermark/logo overlay present" if wm_on else "no logo overlay",
+                         "clip_editor" if wm_on else ""))
+    if camp.get("language", "en") == "en":
+        blobs = {plat: f"{pkg.get('title', '')} {pkg.get('full_caption', '')}" for plat, pkg in pkgs.items()}
+        jp = [plat for plat, b in blobs.items() if JAPANESE.search(b)]
+        out.append(Check("campaign_language", not jp, f"non-English (Japanese/CJK) text on {jp}" if jp
+                         else "English only", "packager" if jp else ""))
     return out
 
 
@@ -197,33 +236,56 @@ REVIEW_SCHEMA = {
             "responsible": {"type": "string", "enum": ["moment", "clip_editor", "packager"]}},
             "required": ["problem", "responsible"], "additionalProperties": False}},
         "summary": {"type": "string"},
+        "violations": {"type": "array", "items": {"type": "string"},
+                       "description": "ids of campaign content rules the clip or its packaging breaks"},
     },
-    "required": ["score", "issues", "summary"],
+    "required": ["score", "issues", "summary", "violations"],
     "additionalProperties": False,
 }
 
 
-def llm_review(llm, p: dict, rules: dict) -> dict:
+def review_packages(p: dict, playbook: dict | None) -> dict:
+    """Packages as the reviewer sees them: titles only for platforms that have a title field (title_max > 0)."""
+    plats = ((playbook or {}).get("packaging") or {}).get("platforms") or {}
+    out = {}
+    for k, v in (p.get("packages") or {}).items():
+        has_title = plats.get(k, {}).get("title_max", 1) > 0
+        out[k] = {"title": v["title"], "caption": v["full_caption"]} if has_title else {"caption": v["full_caption"]}
+    return out
+
+
+def llm_review(llm, p: dict, rules: dict, playbook: dict | None = None) -> dict:
     system = ("You are an independent QA reviewer for short vertical clips cut from long videos. You did not choose "
               "or package this clip. Judge it strictly as a viewer scrolling a feed would: does it hook in the first "
               "3 seconds, make sense without context, end cleanly, and are the titles/captions accurate to what is "
               "said? Score 1-10. List concrete issues and who is responsible: 'moment' (bad choice of segment), "
-              "'clip_editor' (boundaries, captions, framing), 'packager' (titles, captions, hashtags).")
+              "'clip_editor' (boundaries, captions, framing), 'packager' (titles, captions, hashtags). "
+              "Some platforms (TikTok, Instagram Reels) have no title field, so their packages carry only a caption: "
+              "a missing or empty title there is by design and must not be counted as an issue.")
+    content_rules = ((rules or {}).get("campaign") or {}).get("content_rules") or []
+    if content_rules:
+        system += (" Also check these campaign content rules and list the id of every rule the clip or its packaging "
+                   "breaks in 'violations' (empty when none):\n"
+                   + "\n".join(f"- {r['id']}: {r['text']}" for r in content_rules))
+    else:
+        system += " Return an empty 'violations' list."
     prompt = json.dumps({"transcript": p["text"], "duration_s": round(p["end"] - p["start"], 1),
-                         "packages": {k: {"title": v["title"], "caption": v["full_caption"]}
-                                      for k, v in (p.get("packages") or {}).items()}}, indent=1, ensure_ascii=False)
+                         "packages": review_packages(p, playbook)}, indent=1, ensure_ascii=False)
     return llm.complete_json(system, prompt, REVIEW_SCHEMA, max_tokens=4000, effort="medium")
 
 
 def heuristic_review(p: dict) -> dict:
     c = p.get("criteria") or {}
     score = round((c.get("hook", 5) + c.get("self_contained", 5) + c.get("quotability", 5)) / 3)
-    return {"score": int(score), "issues": [], "summary": "LLM unavailable; heuristic review from Moment Finder criteria"}
+    return {"score": int(score), "issues": [], "violations": [],
+            "summary": "LLM unavailable; heuristic review from Moment Finder criteria"}
 
 
 def decide(checks: list[Check], review: dict, min_score: int, qa_loops: int, max_loops: int) -> tuple[str, str, dict]:
     """Return (to_status, reason, qa_feedback)."""
     failed = [c for c in checks if not c.ok]
+    if review.get("violations"):
+        failed.append(Check("content_rules", False, f"campaign content rules broken: {review['violations']}", "kill"))
     if review["score"] < min_score:
         resp = {i["responsible"] for i in review.get("issues", [])}
         target = "packager" if resp == {"packager"} else ("clip_editor" if resp == {"clip_editor"} else "kill")
@@ -259,9 +321,9 @@ class QAGateAgent(BaseAgent):
         if checks[0].ok:
             checks += [check_sync(p, self.rules), check_black(p, self.rules)]
         checks += [check_cutoff(p, words), *check_rules(p, self.rules, self.settings.assets_dir.parent, self.playbook),
-                   check_duplicate(self.conn, job, self.rules)]
+                   *check_campaign(p, self.rules, self.playbook), check_duplicate(self.conn, job, self.rules)]
         try:
-            review, engine = llm_review(self.llm, p, self.rules), "llm"
+            review, engine = llm_review(self.llm, p, self.rules, self.playbook), "llm"
         except LLMUnavailable as exc:
             log("fallback", level="warning", what="qa_review", job_id=job.id, error=str(exc))
             review, engine = heuristic_review(p), "heuristic"

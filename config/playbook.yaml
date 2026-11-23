@@ -1,6 +1,6 @@
 # HighlightHQ playbook: style and strategy. Versioned.
 # The Learner (Phase 3) may propose edits to this file only; never rules.yaml or posting caps.
-version: "1"
+version: "2"   # v2: Kai Cenat campaign (creator focus, required tags, 50-char Shorts titles, X not Facebook), peaks, no watermark
 
 clip:
   min_s: 20            # shortest candidate segment
@@ -8,6 +8,7 @@ clip:
   target_s: 35         # preferred length; scoring nudges toward it
   top_n: 3             # candidates handed to the Clip Editor per source
   max_overlap: 0.25    # max fraction two chosen candidates may overlap
+  peak_radius_s: 45    # with peaks (run.py add --peaks), windows must lie within +/- N s of a peak
 
 hook:
   window_s: 3          # the hook must land in the first N seconds
@@ -40,6 +41,7 @@ subtitles:
   margin_v: 420                   # distance from bottom, keeps captions out of platform UI
 
 watermark:
+  enabled: false            # campaign forbids logos; true overlays assets/watermark.png
   path: assets/watermark.png
   position: top_right
   opacity: 0.8
@@ -48,9 +50,11 @@ watermark:
 packaging:
   caption_style: hook_then_cta
   cta: "Follow for more highlights."
+  creator_name: "Kai Cenat"         # named in titles/captions instead of generic words like "streamer"
+  required_hashtags: ["#KAICENAT"]  # always first on every platform, counted toward the hashtag cap
   base_hashtags: ["#shorts", "#highlights"]
   platforms:
-    youtube_shorts:   {title_max: 100, caption_max: 500,  hashtags: 3, extra_tags: ["#shorts"]}
+    youtube_shorts:   {title_max: 50,  caption_max: 500,  hashtags: 3, extra_tags: ["#shorts"]}
     instagram_reels:  {title_max: 0,   caption_max: 2200, hashtags: 5, extra_tags: ["#reels"]}
     tiktok:           {title_max: 0,   caption_max: 2200, hashtags: 4, extra_tags: ["#fyp"]}
-    facebook_reels:   {title_max: 255, caption_max: 2000, hashtags: 3, extra_tags: ["#reels"]}
+    x:                {title_max: 0,   caption_max: 280,  hashtags: 2, extra_tags: []}   # 280 incl. hashtags

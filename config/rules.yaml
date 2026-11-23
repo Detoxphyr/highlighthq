@@ -12,12 +12,28 @@ qa:
   min_llm_score: 6          # independent QA pass, 1-10
   duplicate_overlap: 0.5    # time IoU vs an existing clip from the same source
   duplicate_text_similarity: 0.85
-  require_watermark: true
+  require_watermark: false  # off: campaign.no_logos forbids any watermark/logo overlay
 
 content:
   banned_terms: ["guaranteed income", "get rich quick", "free money", "click the link in bio to claim"]
   max_hashtags_any_platform: 5
   disallow_all_caps_titles: true
+
+campaign:                   # Kai Cenat GTA 6 Marathon (Clipped & Shipped). Enforced by the QA Gate.
+  name: "Kai Cenat GTA 6 Marathon"
+  required_mentions: ["Kai Cenat"]      # every platform's title or caption must name him
+  required_hashtags: ["#KAICENAT"]      # every platform's caption
+  allowed_platforms: [tiktok, instagram_reels, youtube_shorts, x]   # no Facebook Reels
+  no_logos: true                        # no watermark or logo overlay; the Clip Editor never adds one
+  language: en                          # English captions/descriptions only; never Japanese text
+  min_source_date: "2026-11-18"         # footage from his GTA marathon on or after this date (logged, not blocking)
+  content_rules:                        # judged by the QA LLM review; any violation kills the clip
+    - id: kai_primary_focus
+      text: "Kai Cenat must be the primary focus and appear in the clip itself, not only in an intro."
+    - id: no_negative_portrayal
+      text: "No negative portrayal of Kai Cenat."
+    - id: no_hate_farming
+      text: "No hate farming and no negative false narratives."
 
 posting:                    # enforced by the Publisher in Phase 2
   daily_cap_per_account: 3
