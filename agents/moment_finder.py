@@ -73,6 +73,8 @@ def split_sentences(words: list[dict], max_gap: float = 1.2) -> list[Sentence]:
 
 
 def build_windows(sentences: list[Sentence], min_s: float, max_s: float, max_windows: int = 4000) -> list[Window]:
+    """All sentence-aligned windows of min_s..max_s. Over max_windows, keep an evenly spaced subset so the
+    whole video stays covered (truncating would silently drop everything after the first N windows)."""
     wins: list[Window] = []
     for i in range(len(sentences)):
         for j in range(i, len(sentences)):
@@ -81,9 +83,34 @@ def build_windows(sentences: list[Sentence], min_s: float, max_s: float, max_win
                 break
             if dur >= min_s:
                 wins.append(Window(len(wins), sentences[i].start, sentences[j].end, sentences[i:j + 1]))
-                if len(wins) >= max_windows:
-                    return wins
+    if len(wins) > max_windows:
+        keep = np.linspace(0, len(wins) - 1, max_windows).round().astype(int)
+        wins = [wins[k] for k in sorted(set(keep.tolist()))]
+        for n, w in enumerate(wins):
+            w.id = n
     return wins
+
+
+def near_peaks(windows: list[Window], peaks: list[float], radius_s: float) -> list[Window]:
+    """Keep windows that lie entirely within radius_s of some peak (seconds into the source)."""
+    keep = [w for w in windows if any(p - radius_s <= w.start and w.end <= p + radius_s for p in peaks)]
+    for n, w in enumerate(keep):
+        w.id = n
+    return keep
+
+
+def load_peaks(path: str) -> list[float]:
+    """Peaks file: kai_scan.py output ([{"peak": s, ...}]), {"peaks": [...]}, or a plain list of seconds."""
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if isinstance(data, dict):
+        data = data.get("peaks", [])
+    out = []
+    for item in data:
+        v = item.get("peak", item.get("start")) if isinstance(item, dict) else item
+        if v is not None:
+            out.append(float(v))
+    return sorted(out)
 
 
 def overlap_ratio(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -189,6 +216,11 @@ def llm_score(llm, windows: list[Window], playbook: dict) -> None:
         "- quotability: is there a line people would repeat or share?\n"
         "Be strict: most segments should score below 7. Give a one-sentence reason naming the strongest line."
     )
+    creator = (playbook.get("packaging") or {}).get("creator_name", "").strip()
+    if creator:
+        system += (f"\nThis is a {creator} stream. Favour funny moments, memorable quotes and big reactions from "
+                   f"{creator} himself. Score segments down (self_contained and emotional_peak) when {creator} is not "
+                   "the focus: reading chat or menus, other people talking, quiet gameplay, or setup chatter.")
     items = []
     for w in windows:
         opening = " ".join(x["w"] for s in w.sentences for x in s.words if x["s"] - w.start <= hook_s)
@@ -218,10 +250,30 @@ def select_top(windows: list[Window], n: int, max_overlap: float) -> list[Window
     return sorted(chosen, key=lambda x: x.start)
 
 
-def find_moments(transcript: dict, scenes: dict, playbook: dict, llm=None, llm_pool: int = 25) -> tuple[list[Window], str]:
+def peak_windows(sentences: list[Sentence], peaks: list[float], radius_s: float, min_s: float, max_s: float) -> list[Window]:
+    """Windows built only from sentences inside the (merged) regions peak +/- radius_s."""
+    regions: list[list[float]] = []
+    for p in sorted(peaks):
+        a, b = p - radius_s, p + radius_s
+        if regions and a <= regions[-1][1]:
+            regions[-1][1] = max(regions[-1][1], b)
+        else:
+            regions.append([a, b])
+    wins: list[Window] = []
+    for a, b in regions:
+        inside = [s for s in sentences if a <= s.start and s.end <= b]
+        wins += build_windows(inside, min_s, max_s)
+    return near_peaks(wins, peaks, radius_s)
+
+
+def find_moments(transcript: dict, scenes: dict, playbook: dict, llm=None, llm_pool: int = 25,
+                 peaks: list[float] | None = None) -> tuple[list[Window], str]:
     cfg = playbook["clip"]
     sentences = split_sentences(all_words(transcript))
-    windows = build_windows(sentences, cfg["min_s"], cfg["max_s"])
+    if peaks:
+        windows = peak_windows(sentences, peaks, float(cfg.get("peak_radius_s", 45)), cfg["min_s"], cfg["max_s"])
+    else:
+        windows = build_windows(sentences, cfg["min_s"], cfg["max_s"])
     if not windows:
         return [], "none"
     loud = np.array(scenes.get("loudness_db") or [], dtype=float)
@@ -254,9 +306,11 @@ class MomentFinderAgent(BaseAgent):
     def process(self, job):
         transcript = json.loads(open(job.payload["transcript"], encoding="utf-8").read())
         scenes = json.loads(open(job.payload["scenes"], encoding="utf-8").read())
-        chosen, engine = find_moments(transcript, scenes, self.playbook, llm=self.llm)
+        peaks = job.payload.get("peaks") or None
+        chosen, engine = find_moments(transcript, scenes, self.playbook, llm=self.llm, peaks=peaks)
         if not chosen:
-            return AgentResult("killed", reason="no segment fits the playbook length window")
+            why = "near the given peaks" if peaks else "in the transcript"
+            return AgentResult("killed", reason=f"no segment fits the playbook length window {why}")
         ids = []
         for w in chosen:
             ids.append(J.create_job(
@@ -268,7 +322,7 @@ class MomentFinderAgent(BaseAgent):
                 decisions={"hook_type": w.hook_type, "length_s": round(w.duration, 1),
                            "playbook_version": self.playbook["version"], "scoring_engine": engine}))
         return AgentResult("candidates", reason=f"{len(ids)} candidates via {engine}: clip jobs {ids}",
-                           payload={"clip_jobs": ids, "scoring_engine": engine})
+                           payload={"clip_jobs": ids, "scoring_engine": engine, "used_peaks": bool(peaks)})
 
 
 def main():  # pragma: no cover

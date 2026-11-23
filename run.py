@@ -2,7 +2,7 @@
 """HighlightHQ CLI.
 
   python run.py init-db
-  python run.py add <url-or-path> [--title T]
+  python run.py add <url-or-path> [--title T] [--peaks FILE] [--source-date YYYY-MM-DD]
   python run.py run-agent <ingest|moment_finder|clip_editor|packager|qa_gate> [--once]
   python run.py run-pipeline            # drain every Phase 1 agent until no work is left
   python run.py status                  # job table
@@ -11,7 +11,9 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
+from pathlib import Path
 
 from core import jobs as J
 from core.alerts import write_digest
@@ -69,6 +71,10 @@ def main(argv=None) -> int:
     a = sub.add_parser("add")
     a.add_argument("source")
     a.add_argument("--title")
+    a.add_argument("--peaks", help="JSON peaks file (kai_scan.py output or a list of seconds); default: "
+                                   "<video>.peaks.json next to a local file, if present")
+    a.add_argument("--source-date", help="date the footage was streamed (YYYY-MM-DD), checked against "
+                                         "rules.yaml campaign.min_source_date")
     r = sub.add_parser("run-agent")
     r.add_argument("agent", choices=PHASE1)
     r.add_argument("--once", action="store_true")
@@ -88,8 +94,14 @@ def main(argv=None) -> int:
         pb = load_playbook(settings, conn)
         print(f"initialized {settings.db_path} (playbook v{pb['version']})")
     elif args.cmd == "add":
-        job_id = J.add_source(conn, args.source, args.title)
-        print(f"added source job {job_id} (scouted)")
+        from agents.moment_finder import load_peaks
+        peaks_file = args.peaks
+        if not peaks_file and not re.match(r"^https?://", args.source):
+            sidecar = Path(args.source).expanduser().with_suffix(".peaks.json")
+            peaks_file = str(sidecar) if sidecar.exists() else None
+        peaks = load_peaks(peaks_file) if peaks_file else None
+        job_id = J.add_source(conn, args.source, args.title, peaks=peaks, source_date=args.source_date)
+        print(f"added source job {job_id} (scouted)" + (f" with {len(peaks)} peaks from {peaks_file}" if peaks else ""))
     elif args.cmd == "run-agent":
         n = agent_class(args.agent)(settings, conn).run(once=args.once, poll_interval=args.poll)
         print(f"{args.agent}: processed {n} job(s)")

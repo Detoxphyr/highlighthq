@@ -176,6 +176,10 @@ class IngestAgent(BaseAgent):
     def process(self, job):
         out_dir = self.job_dir(job)
         src = job.payload["input"]
+        min_date = (self.rules.get("campaign") or {}).get("min_source_date")
+        src_date = job.payload.get("source_date")
+        if min_date and src_date and str(src_date) < str(min_date):
+            log("source_before_campaign", level="warning", job_id=job.id, source_date=src_date, min_date=min_date)
         media, how = fetch_source(src, out_dir)
         info = probe(media)
         if not info["has_audio"]:

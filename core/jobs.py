@@ -69,12 +69,18 @@ def record_transition(conn, job_id: int, from_status: str | None, to_status: str
     log("job_transition", job_id=job_id, from_status=from_status, to_status=to_status, agent=agent, reason=reason)
 
 
-def add_source(conn, url_or_path: str, title: str | None = None) -> int:
-    """Create a source and its job card in 'scouted'."""
+def add_source(conn, url_or_path: str, title: str | None = None, peaks: list[float] | None = None,
+               source_date: str | None = None) -> int:
+    """Create a source and its job card in 'scouted'. Optional peaks (seconds into the source) restrict the
+    Moment Finder to windows near them; source_date (YYYY-MM-DD) is when the footage was streamed."""
     cur = conn.execute("INSERT INTO sources(url_or_path, title) VALUES (?,?)", (url_or_path, title))
     source_id = cur.lastrowid
-    return create_job(conn, kind="source", source_id=source_id, status="scouted",
-                      payload={"input": url_or_path}, agent="scout")
+    payload = {"input": url_or_path}
+    if peaks:
+        payload["peaks"] = sorted(float(p) for p in peaks)
+    if source_date:
+        payload["source_date"] = source_date
+    return create_job(conn, kind="source", source_id=source_id, status="scouted", payload=payload, agent="scout")
 
 
 def create_job(conn, *, kind: str, source_id: int, status: str, payload: dict, decisions: dict | None = None,
